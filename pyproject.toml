@@ -1,0 +1,57 @@
+[project]
+name = "easacompliance"
+version = "2.0.0"
+description = "Parser et système de recherche sémantique pour les règlements EASA"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    {name = "Didier Moraine", email = "didier@moraine.be"}
+]
+license = {text = "MIT"}
+keywords = ["easa", "aviation", "regulations", "parser", "rag", "embeddings"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Text Processing :: Markup :: XML",
+]
+
+dependencies = [
+    "sentence-transformers>=2.2.0",
+    "numpy>=1.20.0",
+    "tqdm>=4.67.1",
+    "mcp>=1.21.1",
+    "openai>=2.8.0",
+    "python-dotenv>=1.2.1",
+    "crewai>=1.5.0",
+    "crewai-tools>=1.5.0",
+    "markdown>=3.10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+build-easa-embeddings = "scripts.build_embeddings:main"
+search-easa-regulations = "scripts.search_regulations:main"
+
+[project.urls]
+Homepage = "https://github.com/dmoraine/easacompliance"
+Documentation = "https://github.com/dmoraine/easacompliance#readme"
+Repository = "https://github.com/dmoraine/easacompliance"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatchling.build.targets.wheel]
+packages = ["easacompliance"]

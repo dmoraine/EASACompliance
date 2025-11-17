@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "easa-regulations": {
+      "command": "uv",
+      "args": [
+        "run",
+        "python",
+        "{PROJECT_ROOT}/run_mcp_server.py"
+      ],
+      "env": {
+        "EASA_DB_PATH": "{PROJECT_ROOT}/easa_complete.db",
+        "EASA_MODEL": "all-MiniLM-L6-v2",
+        "EASA_MAX_RESULTS": "20",
+        "EASA_CACHE": "true"
+      }
+    }
+  }
+}
