@@ -57,6 +57,7 @@ class ProviderConfig:
     model: str
     supports_streaming: bool = True
     supports_tools: bool = True
+    supports_streaming_tools: bool = True  # Some providers don't stream tool calls properly
 
 
 class ConfigManager:
@@ -103,7 +104,9 @@ class ConfigManager:
                 name="Hyperbolic",
                 api_key=hyperbolic_key,
                 base_url=hyperbolic_base,
-                model=hyperbolic_model
+                model=hyperbolic_model,
+                supports_streaming=False,  # Hyperbolic has streaming issues
+                supports_streaming_tools=False  # Hyperbolic doesn't stream tool calls properly
             )
     
     def get_provider(self, provider_id: str) -> Optional[ProviderConfig]:
@@ -263,6 +266,10 @@ class UnifiedLLMClient:
         Returns:
             Streaming or non-streaming response
         """
+        # Disable streaming if provider doesn't support streaming tools and we have tools
+        if tools and not self.config.supports_streaming_tools:
+            stream = False
+        
         kwargs = {
             "model": self.config.model,
             "messages": messages,
@@ -387,7 +394,8 @@ class ChatMCPApp:
                     "You are an expert assistant for EASA (European Union Aviation Safety Agency) regulations. "
                     "You have access to tools to search and retrieve EASA regulations. "
                     "Use these tools when needed to provide accurate, regulation-backed answers. "
-                    "Always cite specific regulation references when available."
+                    "Always cite specific regulation references when available. "
+                    "After using tools to gather information, provide a clear and complete answer to the user's question."
                 )
             },
             {
@@ -402,66 +410,139 @@ class ChatMCPApp:
         # Maximum iterations to prevent infinite loops
         max_iterations = 10
         iteration = 0
+        has_used_tools = False
         
         while iteration < max_iterations:
             iteration += 1
             
+            # After tools are used once, we can optionally remove them to force a text response
+            # This helps models that struggle with the tool->response transition
+            current_tools = None if has_used_tools else tools
+            
+            # Determine if we should use streaming
+            use_streaming = self.provider_config.supports_streaming
+            
+            # Some providers don't support streaming tool calls even if they support regular streaming
+            if current_tools and not self.provider_config.supports_streaming_tools:
+                use_streaming = False
+            
+            
             # Call LLM
             response = self.llm_client.chat_completion(
                 messages=messages,
-                tools=tools,
-                stream=True
+                tools=current_tools,
+                stream=use_streaming
             )
             
-            # Process streaming response
+            # Process response (streaming or non-streaming)
             assistant_message = {"role": "assistant", "content": "", "tool_calls": []}
             current_tool_call = None
             print("\nAssistant: ", end="", flush=True)
             
-            for chunk in response:
-                if not chunk.choices:
-                    continue
-                
-                delta = chunk.choices[0].delta
-                
-                # Handle content
-                if delta.content:
-                    print(delta.content, end="", flush=True)
-                    assistant_message["content"] += delta.content
-                
-                # Handle tool calls
-                if delta.tool_calls:
-                    for tc_chunk in delta.tool_calls:
-                        if tc_chunk.index is not None:
-                            # New tool call or continuation
-                            while len(assistant_message["tool_calls"]) <= tc_chunk.index:
-                                assistant_message["tool_calls"].append({
-                                    "id": "",
-                                    "type": "function",
-                                    "function": {"name": "", "arguments": ""}
-                                })
-                            
-                            current_tool_call = assistant_message["tool_calls"][tc_chunk.index]
-                            
-                            if tc_chunk.id:
-                                current_tool_call["id"] = tc_chunk.id
-                            if tc_chunk.function:
-                                if tc_chunk.function.name:
-                                    current_tool_call["function"]["name"] = tc_chunk.function.name
-                                if tc_chunk.function.arguments:
-                                    current_tool_call["function"]["arguments"] += tc_chunk.function.arguments
+            if use_streaming:
+                # Streaming mode
+                for chunk in response:
+                    if not chunk.choices:
+                        continue
+                    
+                    choice = chunk.choices[0]
+                    delta = choice.delta
+                    
+                    # Handle content
+                    if delta.content:
+                        print(delta.content, end="", flush=True)
+                        assistant_message["content"] += delta.content
+                    
+                    # Handle tool calls
+                    if delta.tool_calls:
+                        for tc_chunk in delta.tool_calls:
+                            if tc_chunk.index is not None:
+                                # New tool call or continuation
+                                while len(assistant_message["tool_calls"]) <= tc_chunk.index:
+                                    assistant_message["tool_calls"].append({
+                                        "id": "",
+                                        "type": "function",
+                                        "function": {"name": "", "arguments": ""}
+                                    })
+                                
+                                current_tool_call = assistant_message["tool_calls"][tc_chunk.index]
+                                
+                                if tc_chunk.id:
+                                    current_tool_call["id"] = tc_chunk.id
+                                if tc_chunk.function:
+                                    if tc_chunk.function.name:
+                                        current_tool_call["function"]["name"] = tc_chunk.function.name
+                                    if tc_chunk.function.arguments:
+                                        current_tool_call["function"]["arguments"] += tc_chunk.function.arguments
+            else:
+                # Non-streaming mode
+                if response.choices:
+                    choice = response.choices[0]
+                    message = choice.message
+                    
+                    # Handle content
+                    if message.content:
+                        print(message.content, end="", flush=True)
+                        assistant_message["content"] = message.content
+                    
+                    # Handle tool calls
+                    if message.tool_calls:
+                        assistant_message["tool_calls"] = []
+                        for tc in message.tool_calls:
+                            assistant_message["tool_calls"].append({
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments
+                                }
+                            })
             
             print()  # New line after response
             
-            # Check if there are tool calls
-            if assistant_message["tool_calls"] and assistant_message["tool_calls"][0]["id"]:
-                # Add assistant message to history
-                messages.append(assistant_message)
+            # Validate tool calls - check if we have complete, valid tool calls
+            valid_tool_calls = []
+            if assistant_message["tool_calls"]:
+                for tc in assistant_message["tool_calls"]:
+                    # A valid tool call must have id, name, and valid JSON arguments
+                    if tc["id"] and tc["function"]["name"] and tc["function"]["arguments"]:
+                        try:
+                            # Verify arguments are valid JSON
+                            json.loads(tc["function"]["arguments"])
+                            valid_tool_calls.append(tc)
+                        except json.JSONDecodeError:
+                            # Skip invalid JSON silently
+                            pass
+            
+            # Check if we have valid tool calls to execute
+            if valid_tool_calls:
+                # Update the message with only valid tool calls
+                assistant_message["tool_calls"] = valid_tool_calls
+                
+                # For providers that don't support proper tool protocol, use a workaround
+                if not self.provider_config.supports_streaming_tools:
+                    # Don't add assistant message with tool_calls, use regular text instead
+                    messages.append({
+                        "role": "assistant",
+                        "content": "Let me search for that information..."
+                    })
+                else:
+                    # Add assistant message to history (with tool calls, content should be empty)
+                    # Different providers handle this differently:
+                    # - OpenAI: accepts None or no field
+                    # - Hyperbolic: seems to require empty string or the field present
+                    if assistant_message["tool_calls"]:
+                        if not assistant_message["content"]:
+                            assistant_message["content"] = ""  # Use empty string instead of None
+                    
+                    messages.append(assistant_message)
+                
+                has_used_tools = True
                 
                 # Execute tool calls
                 print("\n🔧 Executing tool calls...", file=sys.stderr)
                 
-                for tool_call in assistant_message["tool_calls"]:
+                for tool_call in valid_tool_calls:
                     tool_name = tool_call["function"]["name"]
                     tool_args = json.loads(tool_call["function"]["arguments"])
                     
@@ -472,32 +553,55 @@ class ChatMCPApp:
                         result = await self.mcp_client.call_tool(tool_name, tool_args)
                         
                         # Add tool result to messages
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call["id"],
-                            "content": result
-                        })
+                        # Some providers (like Hyperbolic) don't properly support role="tool"
+                        # so we use role="user" as a workaround for those providers
+                        if self.provider_config.supports_streaming_tools:
+                            # Provider properly supports tool protocol
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call["id"],
+                                "content": result
+                            })
+                        else:
+                            # Workaround: convert tool result to user message
+                            messages.append({
+                                "role": "user",
+                                "content": f"Tool '{tool_name}' result:\n{result}"
+                            })
                         
                         print(f"   ✅ {tool_name} completed", file=sys.stderr)
                     
                     except Exception as e:
                         print(f"   ❌ {tool_name} failed: {e}", file=sys.stderr)
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call["id"],
-                            "content": json.dumps({"error": str(e)})
-                        })
+                        error_content = json.dumps({"error": str(e)})
+                        
+                        if self.provider_config.supports_streaming_tools:
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call["id"],
+                                "content": error_content
+                            })
+                        else:
+                            messages.append({
+                                "role": "user",
+                                "content": f"Tool '{tool_name}' error:\n{error_content}"
+                            })
                 
                 print(file=sys.stderr)
                 # Continue loop to get final response
                 continue
             
+            elif assistant_message["content"]:
+                # We have content but no tool calls - we're done
+                break
+            
             else:
-                # No more tool calls, we're done
+                # No content and no valid tool calls - something went wrong
+                print("\n⚠️  Model produced no output.", file=sys.stderr)
                 break
         
         if iteration >= max_iterations:
-            print("\n⚠️  Maximum iterations reached", file=sys.stderr)
+            print("\n⚠️  Maximum iterations reached.", file=sys.stderr)
 
 
 # ============================================================================

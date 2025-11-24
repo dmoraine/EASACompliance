@@ -78,6 +78,12 @@ class SearchTools:
         # Limiter top_k
         top_k = min(top_k, self.config.max_search_results)
         
+        # Nettoyer les types (enlever les chaînes vides)
+        if types:
+            types = [t for t in types if t and t.strip()]
+            if not types:
+                types = None
+        
         # Rechercher
         results = self.embeddings_manager.search(
             query=query,
