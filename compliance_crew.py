@@ -46,6 +46,13 @@ except ImportError as e:
     print(f"   Import error details: {e}")
     sys.exit(1)
 
+# Import custom HyperbolicLLM
+try:
+    from easacompliance.llm import HyperbolicLLM
+except ImportError:
+    print("Warning: easacompliance.llm.HyperbolicLLM not found. Hyperbolic provider may not work correctly.")
+    HyperbolicLLM = None
+
 
 # ============================================================================
 # Configuration Management (reused from chat_mcp.py)
@@ -234,15 +241,17 @@ def _sync_call_mcp_tool(tool_name: str, **kwargs) -> str:
         return json.dumps({"error": "MCP client not initialized"})
     
     try:
-        # Run async call in the event loop
+        # Run async call in the event loop running in main thread
         future = asyncio.run_coroutine_threadsafe(
             _mcp_client.call_tool(tool_name, kwargs),
             _event_loop
         )
-        result = future.result(timeout=60)
+        result = future.result(timeout=120)  # Increased timeout for complex queries
         return result
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        error_msg = f"{type(e).__name__}: {str(e)}"
+        print(f"⚠️  MCP tool '{tool_name}' failed: {error_msg}", file=sys.stderr)
+        return json.dumps({"error": error_msg})
 
 
 @tool("search_easa_regulations")
@@ -559,16 +568,26 @@ class ComplianceCrewApp:
         if not self.provider_config:
             raise ValueError(f"Provider '{provider_id}' not configured")
         
-        # Setup LLM configuration for CrewAI
-        os.environ["OPENAI_API_KEY"] = self.provider_config.api_key
-        os.environ["OPENAI_API_BASE"] = self.provider_config.base_url
-        os.environ["OPENAI_MODEL_NAME"] = self.provider_config.model
-        
-        self.llm_config = {
-            "model": self.provider_config.model,
-            "base_url": self.provider_config.base_url,
-            "api_key": self.provider_config.api_key
-        }
+        # Setup LLM - use custom HyperbolicLLM for Hyperbolic provider
+        if provider_id == "hyperbolic" and HyperbolicLLM is not None:
+            # Use custom HyperbolicLLM class to avoid litellm issues
+            self.llm_instance = HyperbolicLLM(
+                model=self.provider_config.model,
+                api_key=self.provider_config.api_key,
+                base_url=self.provider_config.base_url,
+                temperature=0.1
+            )
+            self.llm_config = {"model": self.llm_instance}
+        else:
+            # For other providers, use litellm via environment variables
+            os.environ["OPENAI_API_KEY"] = self.provider_config.api_key
+            os.environ["OPENAI_API_BASE"] = self.provider_config.base_url
+            
+            # Use OpenAI-compatible configuration
+            self.llm_instance = None
+            self.llm_config = {
+                "model": self.provider_config.model,
+            }
         
         self.mcp_client = MCPClient()
         self.crew = None
@@ -592,10 +611,11 @@ class ComplianceCrewApp:
         await self.mcp_client.initialize(session)
         
         # Set global references for tool wrappers
+        # IMPORTANT: Store the CURRENT event loop (where session was created)
         _mcp_client = self.mcp_client
-        _event_loop = asyncio.get_event_loop()
+        _event_loop = asyncio.get_running_loop()
         
-        print("✅ MCP server connected", file=sys.stderr)
+        print("✅ MCP server connected with background event loop", file=sys.stderr)
     
     async def cleanup_mcp(self):
         """Cleanup MCP connection"""
@@ -625,7 +645,7 @@ class ComplianceCrewApp:
             tasks=[audit_task, challenge_task, final_report_task],
             process=Process.sequential,
             verbose=self.verbose,
-            memory=True
+            memory=False  # Disable memory to avoid embedding authentication issues
         )
         
         return crew
@@ -649,8 +669,33 @@ class ComplianceCrewApp:
             print("🚀 Starting compliance audit crew...\n", file=sys.stderr)
             crew = self.create_crew(text_to_audit)
             
-            # Run the crew
-            result = crew.kickoff()
+            # Run the crew in a thread to keep event loop free for MCP calls
+            import concurrent.futures
+            import threading
+            
+            result_container = {}
+            exception_container = {}
+            
+            def run_crew_sync():
+                """Run crew.kickoff() in a separate thread"""
+                try:
+                    result_container['result'] = crew.kickoff()
+                except Exception as e:
+                    exception_container['exception'] = e
+            
+            print("🔄 Launching crew in background thread (keeping event loop free for MCP calls)...", file=sys.stderr)
+            crew_thread = threading.Thread(target=run_crew_sync, daemon=False)
+            crew_thread.start()
+            
+            # Keep event loop active while crew runs
+            while crew_thread.is_alive():
+                await asyncio.sleep(0.1)  # Allow event loop to process MCP calls
+            
+            # Check for exceptions
+            if 'exception' in exception_container:
+                raise exception_container['exception']
+            
+            result = result_container.get('result')
             
             # Extract text from CrewOutput object
             # CrewAI returns a CrewOutput object, we need to get the string content
@@ -801,6 +846,9 @@ async def main():
         
         print(f"\n✅ Audit complete! Report saved to: {args.output}")
         
+    except KeyboardInterrupt:
+        print("\n⚠️  Audit interrupted by user")
+        sys.exit(130)
     except Exception as e:
         print(f"❌ Error: {e}", file=sys.stderr)
         import traceback
@@ -809,5 +857,21 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import io
+    
+    # Suppress CrewAI's FilteredStream cleanup error
+    # This is a known CrewAI bug where FilteredStream tries to flush after sys.stderr is closed
+    # We temporarily redirect stderr during cleanup to hide the error message
+    original_stderr = sys.stderr
+    
+    try:
+        asyncio.run(main())
+    finally:
+        # Temporarily suppress stderr to hide CrewAI cleanup error
+        sys.stderr = io.StringIO()
+        # Give time for any background cleanup
+        import time
+        time.sleep(0.1)
+        # Restore stderr
+        sys.stderr = original_stderr
 

@@ -21,6 +21,13 @@ Usage:
 from .parser import EASAParser, Topic, TopicType
 from .embeddings import EmbeddingsManager, SearchResult
 
+# LLM wrappers (optional, only if crewai is installed)
+try:
+    from .llm import HyperbolicLLM
+    _has_llm = True
+except ImportError:
+    _has_llm = False
+
 __version__ = "2.0.0"
 __author__ = "Didier"
 __all__ = [
@@ -30,4 +37,8 @@ __all__ = [
     "EmbeddingsManager",
     "SearchResult",
 ]
+
+# Add LLM to exports if available
+if _has_llm:
+    __all__.append("HyperbolicLLM")
 
