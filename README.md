@@ -101,20 +101,20 @@ The script supports two modes: **single file** or **directory batch processing**
 
 ```bash
 # Parse a single XML file (3,357 topics)
-python easacompliance/scripts/build_embeddings.py \
+python build_embeddings.py \
     --xml "Easy Access Rules for Air Operations - February 2025 - xml.xml" \
     --db easa_complete.db \
     --clear
 
 # Parse only a specific category (e.g., ORO.FTL)
-python easacompliance/scripts/build_embeddings.py \
+python build_embeddings.py \
     --xml "Easy Access Rules for Air Operations - February 2025 - xml.xml" \
     --category "ORO.FTL" \
     --db oro_ftl.db \
     --clear
 
 # Parse only IR (Implementing Rules)
-python easacompliance/scripts/build_embeddings.py \
+python build_embeddings.py \
     --xml "Easy Access Rules for Air Operations - February 2025 - xml.xml" \
     --types IR \
     --db easa_ir.db \
@@ -127,18 +127,18 @@ Parse all XML files in a directory automatically:
 
 ```bash
 # Parse all XML files in easy_access/ (default directory)
-python easacompliance/scripts/build_embeddings.py \
+python build_embeddings.py \
     --db easa_complete.db \
     --clear
 
 # Parse all XML files in a specific directory
-python easacompliance/scripts/build_embeddings.py \
+python build_embeddings.py \
     --dir easy_access \
     --db easa_complete.db \
     --clear
 
 # Parse all XML files with filters
-python easacompliance/scripts/build_embeddings.py \
+python build_embeddings.py \
     --dir easy_access \
     --db easa_ir_only.db \
     --types IR \
@@ -152,7 +152,7 @@ python easacompliance/scripts/build_embeddings.py \
 - ✅ Error handling per file (continues if one fails)
 - ✅ Detailed summary with statistics per file and final totals
 
-**Note**: The `build_embeddings.py` script at the root is a convenient wrapper to the full implementation in `easacompliance/scripts/build_embeddings.py`
+**Note**: The `build_embeddings.py` script at the root is a convenient wrapper to the full implementation in `easacompliance/scripts/build_embeddings.py`. You can also use the module directly: `python -m easacompliance.scripts.build_embeddings` or `python easacompliance/scripts/build_embeddings.py`
 
 ### 🔍 Semantic Search
 
@@ -175,6 +175,8 @@ python -m easacompliance.scripts.search_regulations \
     --top-k 10 \
     --min-score 0.3
 ```
+
+**Note**: You can also use the direct path: `python easacompliance/scripts/search_regulations.py`
 
 ### 💻 Python Usage
 
@@ -205,8 +207,8 @@ for result in results:
 ## 📁 Project Structure
 
 ```
-easacompliance/
-├── build_embeddings.py      # Build embeddings database (root script)
+EASACompliance/              # Project root
+├── build_embeddings.py      # Build embeddings database (root script wrapper)
 ├── chat_mcp.py              # Chat MCP client (root script)
 ├── compliance_crew.py        # CrewAI compliance validator (root script)
 ├── run_mcp_server.py        # MCP server launcher (root script)
