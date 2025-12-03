@@ -46,12 +46,13 @@ except ImportError as e:
     print(f"   Import error details: {e}")
     sys.exit(1)
 
-# Import custom HyperbolicLLM
+# Import custom LLM classes
 try:
-    from easacompliance.llm import HyperbolicLLM
+    from easacompliance.llm import HyperbolicLLM, OllamaLLM
 except ImportError:
-    print("Warning: easacompliance.llm.HyperbolicLLM not found. Hyperbolic provider may not work correctly.")
+    print("Warning: easacompliance.llm not found. Custom providers may not work correctly.")
     HyperbolicLLM = None
+    OllamaLLM = None
 
 
 # ============================================================================
@@ -568,7 +569,7 @@ class ComplianceCrewApp:
         if not self.provider_config:
             raise ValueError(f"Provider '{provider_id}' not configured")
         
-        # Setup LLM - use custom HyperbolicLLM for Hyperbolic provider
+        # Setup LLM - use custom LLM classes for providers that don't work with litellm
         if provider_id == "hyperbolic" and HyperbolicLLM is not None:
             # Use custom HyperbolicLLM class to avoid litellm issues
             self.llm_instance = HyperbolicLLM(
@@ -578,8 +579,18 @@ class ComplianceCrewApp:
                 temperature=0.1
             )
             self.llm_config = {"model": self.llm_instance}
+        elif provider_id == "ollama" and OllamaLLM is not None:
+            # Use custom OllamaLLM class to avoid litellm API key issues
+            # Ollama doesn't require an API key, but litellm tries to validate it
+            self.llm_instance = OllamaLLM(
+                model=self.provider_config.model,
+                base_url=self.provider_config.base_url,
+                api_key=None,  # Not used, but kept for compatibility
+                temperature=0.1
+            )
+            self.llm_config = {"model": self.llm_instance}
         else:
-            # For other providers, use litellm via environment variables
+            # For OpenAI and other providers, use litellm via environment variables
             os.environ["OPENAI_API_KEY"] = self.provider_config.api_key
             os.environ["OPENAI_API_BASE"] = self.provider_config.base_url
             

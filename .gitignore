@@ -77,3 +77,9 @@ compliance_*.md
 # Old requirements files
 requirements-old.txt
 requirements-*.old
+
+# Test files
+test*.md
+
+# Manuals
+Manuals/*
